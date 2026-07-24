@@ -512,9 +512,11 @@ void Engine::Step(bool isActive)
 	events.swap(eventQueue);
 	eventQueue.clear();
 
-	// Keep the live-status side channel current if the in-system fleet changed
-	// (e.g. escorts jumped in to rejoin, were left behind, or were destroyed).
+	// Keep the live side channels current: the status file if the in-system
+	// fleet changed (escorts rejoining, being left behind, or destroyed), and
+	// the route file if the plotted course changed (e.g. shrinks as you jump).
 	player.WriteLiveStatusIfFleetChanged();
+	player.WriteLiveRouteIfChanged();
 
 	// Process any outstanding sprites that need to be uploaded to the GPU.
 	queue.ProcessSyncTasks();

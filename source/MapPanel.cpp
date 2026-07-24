@@ -286,6 +286,10 @@ MapPanel::~MapPanel()
 
 void MapPanel::Step()
 {
+	// The map (and its subclasses) is where the player edits the travel plan, so
+	// keep the live-route side channel current whenever it changes here.
+	player.WriteLiveRouteIfChanged();
+
 	if(recentering > 0)
 	{
 		double step = (recentering - .5) / RECENTER_TIME;

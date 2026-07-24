@@ -1836,6 +1836,60 @@ void PlayerInfo::WriteLiveStatusIfFleetChanged() const
 
 
 
+// Write the plotted-course side-channel file (live-route.json). Like the status
+// file it is a read-only observer, written atomically, and never on the save
+// path. The travel plan is normalized to travel order (next jump first).
+void PlayerInfo::WriteLiveRoute() const
+{
+	ostringstream out;
+	out << "{\n";
+	out << "\t\"schemaVersion\": 1,\n";
+	out << "\t\"timestamp\": \"" << Iso8601UtcNow() << "\",\n";
+	out << "\t\"saveName\": \"" << JsonEscape(Files::NameNoExtension(filePath)) << "\",\n";
+	out << "\t\"origin\": " << (system ? "\"" + JsonEscape(system->TrueName()) + "\"" : "null") << ",\n";
+
+	// travelPlan is stored destination-first (PopTravel removes the back, which
+	// is the next hop), so iterate in reverse to emit next-jump-first order.
+	out << "\t\"travelPlan\": [";
+	string sep = "";
+	for(auto it = travelPlan.rbegin(); it != travelPlan.rend(); ++it)
+	{
+		out << sep << "\"" << JsonEscape((*it)->TrueName()) << "\"";
+		sep = ", ";
+	}
+	out << "],\n";
+
+	out << "\t\"destination\": "
+		<< (travelDestination ? "\"" + JsonEscape(travelDestination->TrueName()) + "\"" : "null") << ",\n";
+	out << "\t\"hasPlan\": " << (travelPlan.empty() ? "false" : "true") << "\n";
+	out << "}\n";
+
+	// Remember this route so WriteLiveRouteIfChanged() can detect later edits.
+	size_t signature = reinterpret_cast<size_t>(travelDestination);
+	for(const System *waypoint : travelPlan)
+		signature = signature * 31 + reinterpret_cast<size_t>(waypoint);
+	liveRouteSignature = signature;
+
+	WriteAtomic(Files::Config() / "live-route.json", out.str());
+}
+
+
+
+// Re-emit live-route.json only when the plotted course or destination changed.
+// The plan is edited from several scattered map/mission panels with no single
+// natural hook, so this is polled cheaply each frame from the map and engine.
+void PlayerInfo::WriteLiveRouteIfChanged() const
+{
+	size_t signature = reinterpret_cast<size_t>(travelDestination);
+	for(const System *waypoint : travelPlan)
+		signature = signature * 31 + reinterpret_cast<size_t>(waypoint);
+
+	if(signature != liveRouteSignature)
+		WriteLiveRoute();
+}
+
+
+
 // Switch cargo from being stored in ships to being stored here. Also recharge
 // ships, check for mission completion, and apply fines for contraband.
 void PlayerInfo::Land(UI &ui)

@@ -233,6 +233,12 @@ public:
 	// changed since the last write - e.g. escorts jump in to rejoin, are left
 	// behind, or are destroyed. Cheap enough to call every frame.
 	void WriteLiveStatusIfFleetChanged() const;
+	// Write the plotted-course side-channel file (live-route.json) for companion
+	// tools: the current travel plan in travel order plus its destination. Also
+	// read-only and off the save path. WriteLiveRouteIfChanged() only rewrites
+	// when the plan/destination actually changed; cheap enough to call each frame.
+	void WriteLiveRoute() const;
+	void WriteLiveRouteIfChanged() const;
 
 	// Get or add to pilot's playtime.
 	double GetPlayTime() const noexcept;
@@ -490,9 +496,11 @@ private:
 	std::string filePath;
 	std::shared_ptr<PilotProfile> pilot;
 
-	// Transient cache for the live-status side channel (not saved): a signature
-	// of the active in-system fleet, used to detect fleet-composition changes.
+	// Transient caches for the live side channels (not saved): signatures of the
+	// active in-system fleet and of the plotted travel plan, used to detect when
+	// they change so the files are only rewritten on real changes.
 	mutable std::size_t liveStatusFleetSignature = 0;
+	mutable std::size_t liveRouteSignature = 0;
 
 	Date date;
 	SystemEntry entry = SystemEntry::TAKE_OFF;
