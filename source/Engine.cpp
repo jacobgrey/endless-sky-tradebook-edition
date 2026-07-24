@@ -410,6 +410,10 @@ void Engine::Place()
 		camera.SnapTo(camera.Center());
 
 	player.SetPlanet(nullptr);
+
+	// The flight scene is now set up and the player has departed the planet, so
+	// emit the live-status "liftoff" event with the current (in-flight) state.
+	player.WriteLiveStatus("liftoff");
 }
 
 
@@ -507,6 +511,10 @@ void Engine::Step(bool isActive)
 {
 	events.swap(eventQueue);
 	eventQueue.clear();
+
+	// Keep the live-status side channel current if the in-system fleet changed
+	// (e.g. escorts jumped in to rejoin, were left behind, or were destroyed).
+	player.WriteLiveStatusIfFleetChanged();
 
 	// Process any outstanding sprites that need to be uploaded to the GPU.
 	queue.ProcessSyncTasks();

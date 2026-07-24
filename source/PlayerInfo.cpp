@@ -67,6 +67,61 @@ this program. If not, see <https://www.gnu.org/licenses/>.
 using namespace std;
 
 namespace {
+	// Escape a string for embedding in JSON (used by the live-status side channel).
+	string JsonEscape(const string &str)
+	{
+		string result;
+		result.reserve(str.length() + 2);
+		for(char ch : str)
+			switch(ch)
+			{
+				case '"': result += "\\\""; break;
+				case '\\': result += "\\\\"; break;
+				case '\b': result += "\\b"; break;
+				case '\f': result += "\\f"; break;
+				case '\n': result += "\\n"; break;
+				case '\r': result += "\\r"; break;
+				case '\t': result += "\\t"; break;
+				default:
+					if(static_cast<unsigned char>(ch) < 0x20)
+					{
+						static const char *hex = "0123456789abcdef";
+						result += "\\u00";
+						result += hex[(ch >> 4) & 0xF];
+						result += hex[ch & 0xF];
+					}
+					else
+						result += ch;
+			}
+		return result;
+	}
+
+	// The current real-world time as an ISO-8601 UTC string, so a consumer can
+	// judge how fresh the file is.
+	string Iso8601UtcNow()
+	{
+		time_t now = time(nullptr);
+		tm utc;
+#ifdef _WIN32
+		gmtime_s(&utc, &now);
+#else
+		gmtime_r(&now, &utc);
+#endif
+		char buffer[32];
+		strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+		return buffer;
+	}
+
+	// Atomically write text to a config-directory file: write a temp file, then
+	// rename it over the target so a reader never sees a half-written file.
+	void WriteAtomic(const filesystem::path &target, const string &contents)
+	{
+		filesystem::path temp = target;
+		temp += ".tmp";
+		Files::Write(temp, contents);
+		Files::Move(temp, target);
+	}
+
 	// Move the flagship to the start of your list of ships. It does not make sense
 	// that the flagship would change if you are reunited with a different ship that
 	// was higher up the list.
@@ -963,6 +1018,7 @@ void PlayerInfo::SetSystem(const System &system)
 	this->previousSystem = this->system;
 	this->system = &system;
 	Visit(system);
+	WriteLiveStatus("system-entry");
 }
 
 
@@ -1447,6 +1503,7 @@ void PlayerInfo::ParkShip(const Ship *selected, bool isParked)
 			ship->SetIsParked(isParked);
 			UpdateCargoCapacities();
 			flagship.reset();
+			WriteLiveStatus("fleet-change");
 			return;
 		}
 }
@@ -1678,6 +1735,107 @@ void PlayerInfo::UpdateCargoCapacities()
 
 
 
+// Write a read-only, always-current status file to the config directory for
+// companion tools. This is a pure observer of player state: it never mutates
+// anything and is never on the save-writing path. The save is unaffected.
+void PlayerInfo::WriteLiveStatus(const char *event) const
+{
+	// Aggregate over the active (non-parked, in-system) fleet: total tradeable
+	// cargo capacity, the jump range of the weakest ship (on a full tank, using
+	// its cheapest installed drive), and the cargo actually aboard. Cargo lives
+	// in the pooled hold while landed but is distributed onto the ships while in
+	// flight, so we sum the pooled hold plus each active ship's hold (mutually
+	// exclusive by state) - mirroring how the companion tool reads the save.
+	int cargoCapacity = 0;
+	int jumpRange = -1;
+	size_t signature = 0;
+	map<string, int> commodities;
+	int missionCargoTons = cargo.MissionCargoSize();
+	int outfitCargoTons = cargo.OutfitsSize();
+	for(const auto &it : cargo.Commodities())
+		commodities[it.first] += it.second;
+	for(const shared_ptr<Ship> &ship : ships)
+		if(!ship->IsParked() && ship->GetSystem() == system)
+		{
+			signature = signature * 31 + reinterpret_cast<size_t>(ship.get());
+			cargoCapacity += ship->Attributes().Get("cargo space");
+
+			const CargoHold &hold = ship->Cargo();
+			for(const auto &it : hold.Commodities())
+				commodities[it.first] += it.second;
+			missionCargoTons += hold.MissionCargoSize();
+			outfitCargoTons += hold.OutfitsSize();
+
+			double hyper = ship->JumpNavigation().HyperdriveFuel();
+			double jump = ship->JumpNavigation().JumpDriveFuel();
+			double cheapest = (hyper > 0. && jump > 0.) ? min(hyper, jump) : max(hyper, jump);
+			if(cheapest > 0.)
+			{
+				int jumps = static_cast<int>(ship->Attributes().Get("fuel capacity") / cheapest);
+				if(jumpRange < 0 || jumps < jumpRange)
+					jumpRange = jumps;
+			}
+		}
+	// Remember the fleet we just described, so WriteLiveStatusIfFleetChanged()
+	// can tell when the in-system fleet later changes.
+	liveStatusFleetSignature = signature;
+
+	ostringstream out;
+	out << "{\n";
+	out << "\t\"schemaVersion\": 1,\n";
+	out << "\t\"event\": \"" << event << "\",\n";
+	out << "\t\"timestamp\": \"" << Iso8601UtcNow() << "\",\n";
+	out << "\t\"pilot\": \"" << JsonEscape(firstName + " " + lastName) << "\",\n";
+	out << "\t\"saveName\": \"" << JsonEscape(Files::NameNoExtension(filePath)) << "\",\n";
+	out << "\t\"date\": [" << date.Day() << ", " << date.Month() << ", " << date.Year() << "],\n";
+	out << "\t\"system\": " << (system ? "\"" + JsonEscape(system->TrueName()) + "\"" : "null") << ",\n";
+	out << "\t\"planet\": " << (planet ? "\"" + JsonEscape(planet->TrueName()) + "\"" : "null") << ",\n";
+	out << "\t\"landed\": " << (planet ? "true" : "false") << ",\n";
+	out << "\t\"credits\": " << accounts.Credits() << ",\n";
+	out << "\t\"fleet\": {\n";
+	out << "\t\t\"cargoCapacity\": " << cargoCapacity << ",\n";
+	out << "\t\t\"jumpRange\": " << max(0, jumpRange) << "\n";
+	out << "\t},\n";
+
+	out << "\t\"cargo\": {";
+	string sep = "\n";
+	for(const auto &it : commodities)
+		if(it.second)
+		{
+			out << sep << "\t\t\"" << JsonEscape(it.first) << "\": " << it.second;
+			sep = ",\n";
+		}
+	if(sep != "\n")
+		out << "\n\t";
+	out << "},\n";
+
+	out << "\t\"missionCargoTons\": " << missionCargoTons << ",\n";
+	out << "\t\"outfitCargoTons\": " << outfitCargoTons << "\n";
+	out << "}\n";
+
+	WriteAtomic(Files::Config() / "live-status.json", out.str());
+}
+
+
+
+// Re-emit the live-status file only when the active in-system fleet changes.
+// This catches in-flight fleet changes that have no single natural hook, such
+// as escorts jumping in to rejoin the player (or being left behind when the
+// player jumps ahead) and ships being destroyed. Called every frame by the
+// engine; it only writes when the composition actually differs.
+void PlayerInfo::WriteLiveStatusIfFleetChanged() const
+{
+	size_t signature = 0;
+	for(const shared_ptr<Ship> &ship : ships)
+		if(!ship->IsParked() && ship->GetSystem() == system)
+			signature = signature * 31 + reinterpret_cast<size_t>(ship.get());
+
+	if(signature != liveStatusFleetSignature)
+		WriteLiveStatus("fleet-change");
+}
+
+
+
 // Switch cargo from being stored in ships to being stored here. Also recharge
 // ships, check for mission completion, and apply fines for contraband.
 void PlayerInfo::Land(UI &ui)
@@ -1842,6 +2000,7 @@ void PlayerInfo::Land(UI &ui)
 
 	freshlyLoaded = false;
 	flagship.reset();
+	WriteLiveStatus("landing");
 }
 
 
@@ -2508,6 +2667,7 @@ void PlayerInfo::AcceptJob(const Mission &mission, UI &ui)
 				RemoveMission(Mission::Trigger::FAIL, *it, ui);
 			// Might not have cargo anymore, so some jobs can be sorted to end.
 			SortAvailable();
+			WriteLiveStatus("cargo-change");
 			break;
 		}
 }
@@ -2793,6 +2953,8 @@ void PlayerInfo::MissionCallback(int response)
 		if(mission.IsAtLocation(Mission::BOARDING) || mission.IsAtLocation(Mission::ASSISTING)
 				|| mission.IsAtLocation(Mission::ENTERING) || mission.IsAtLocation(Mission::TRANSITION))
 			activeInFlightMission = &*--spliceIt;
+
+		WriteLiveStatus("cargo-change");
 	}
 	else if(response == Endpoint::DECLINE || response == Endpoint::FLEE)
 	{
@@ -2835,6 +2997,7 @@ void PlayerInfo::RemoveMission(Mission::Trigger trigger, const Mission &mission,
 			cargo.RemoveMissionCargo(&mission);
 			for(shared_ptr<Ship> &ship : ships)
 				ship->Cargo().RemoveMissionCargo(&mission);
+			WriteLiveStatus("cargo-change");
 			return;
 		}
 }

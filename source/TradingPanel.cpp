@@ -254,6 +254,7 @@ bool TradingPanel::KeyDown(SDL_Keycode key, Uint16 mod, const Command &command, 
 			player.Accounts().AddCredits(amount * price);
 			player.Cargo().Remove(commodity, amount);
 		}
+		player.WriteLiveStatus("cargo-change");
 	}
 	else if(key == 'm' && player.Cargo().MinablesSizePrecise())
 	{
@@ -338,6 +339,9 @@ void TradingPanel::Buy(int64_t amount)
 	amount = player.Cargo().Add(type, amount);
 	player.Accounts().AddCredits(-amount * price);
 	GameData::AddPurchase(system, type, amount);
+
+	if(amount)
+		player.WriteLiveStatus("cargo-change");
 }
 
 
@@ -359,6 +363,7 @@ void TradingPanel::SellOutfitsOrMinables(bool sellMinables)
 		player.Accounts().AddCredits(value);
 		player.Cargo().Remove(it.first, it.second);
 	}
+	player.WriteLiveStatus("cargo-change");
 }
 
 

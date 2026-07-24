@@ -225,6 +225,15 @@ public:
 	// Distribute cargo to local ships. Returns a reference to the player's cargo.
 	const CargoHold &DistributeCargo();
 
+	// Write a read-only, always-current status file (live-status.json) to the
+	// config directory for companion tools. Side channel only: never affects
+	// the save, never mutates game state. "event" labels what triggered it.
+	void WriteLiveStatus(const char *event) const;
+	// Re-emit the status file only if the active (in-system, non-parked) fleet
+	// changed since the last write - e.g. escorts jump in to rejoin, are left
+	// behind, or are destroyed. Cheap enough to call every frame.
+	void WriteLiveStatusIfFleetChanged() const;
+
 	// Get or add to pilot's playtime.
 	double GetPlayTime() const noexcept;
 	void AddPlayTime(std::chrono::nanoseconds timeVal);
@@ -480,6 +489,10 @@ private:
 	std::string originalLastName;
 	std::string filePath;
 	std::shared_ptr<PilotProfile> pilot;
+
+	// Transient cache for the live-status side channel (not saved): a signature
+	// of the active in-system fleet, used to detect fleet-composition changes.
+	mutable std::size_t liveStatusFleetSignature = 0;
 
 	Date date;
 	SystemEntry entry = SystemEntry::TAKE_OFF;
