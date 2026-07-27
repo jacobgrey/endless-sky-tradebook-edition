@@ -37,6 +37,7 @@ this program. If not, see <https://www.gnu.org/licenses/>.
 #include "shader/PointerShader.h"
 #include "Preferences.h"
 #include "shader/RingShader.h"
+#include "RoutePlan.h"
 #include "Screen.h"
 #include "Ship.h"
 #include "image/Sprite.h"
@@ -78,6 +79,50 @@ namespace {
 				return true;
 
 		return false;
+	}
+
+	// Append per-unit and per-jump earnings to a mission's description, so that the opportunity
+	// cost of competing jobs can be compared directly. Missions with stopovers or waypoints are
+	// left alone: the player chooses their own route through those, so a single figure would
+	// mislead more than it informs. This only builds display text; the mission is never modified.
+	string WithProfitInfo(const Mission &mission, const PlayerInfo &player)
+	{
+		const string &description = mission.Description();
+
+		if(!mission.Stopovers().empty() || !mission.Waypoints().empty())
+			return description;
+
+		const int64_t payment = mission.DisplayedPayment();
+		if(payment <= 0)
+			return description;
+
+		// Measure the payment against whichever capacity this mission actually consumes.
+		const int tons = mission.CargoSize();
+		const int bunks = mission.Passengers();
+		if(tons <= 0 && bunks <= 0)
+			return description;
+
+		const System *from = player.GetSystem();
+		const Planet *destination = mission.Destination();
+		if(!from || !destination || !destination->GetSystem())
+			return description;
+
+		RoutePlan route(*from, *destination->GetSystem(), &player);
+		if(!route.HasRoute())
+			return description;
+
+		// Plan() omits the system being travelled from, so its size is the number of jumps.
+		const int jumps = static_cast<int>(route.Plan().size());
+		if(jumps <= 0)
+			return description;
+
+		string result = description + "\n\n";
+		result += Format::CreditString(payment / (tons > 0 ? tons : bunks));
+		result += (tons > 0 ? " per ton\n" : " per bunk\n");
+		result += Format::CreditString(payment / jumps) + " per jump ("
+			+ Format::SimplePluralization(jumps, "jump") + ")";
+
+		return result;
 	}
 
 	size_t MaxDisplayedMissions(bool onRight)
@@ -947,7 +992,7 @@ void MissionPanel::DrawMissionInfo()
 			AddChild(description);
 			descriptionVisible = true;
 		}
-		description->SetText(availableIt->Description());
+		description->SetText(WithProfitInfo(*availableIt, player));
 	}
 	else if(acceptedIt != accepted.end())
 	{
@@ -956,7 +1001,7 @@ void MissionPanel::DrawMissionInfo()
 			AddChild(description);
 			descriptionVisible = true;
 		}
-		description->SetText(acceptedIt->Description());
+		description->SetText(WithProfitInfo(*acceptedIt, player));
 	}
 	else if(descriptionVisible)
 	{
