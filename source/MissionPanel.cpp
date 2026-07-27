@@ -84,7 +84,9 @@ namespace {
 	// Append per-unit and per-jump earnings to a mission's description, so that the opportunity
 	// cost of competing jobs can be compared directly. Missions with stopovers or waypoints are
 	// left alone: the player chooses their own route through those, so a single figure would
-	// mislead more than it informs. This only builds display text; the mission is never modified.
+	// mislead more than it informs. Earnings per jump are dropped when no route to the destination
+	// is known, but earnings per unit of capacity are shown regardless, since those do not depend
+	// on knowing the way there. This only builds display text; the mission is never modified.
 	string WithProfitInfo(const Mission &mission, const PlayerInfo &player)
 	{
 		const string &description = mission.Description();
@@ -102,27 +104,24 @@ namespace {
 		if(tons <= 0 && bunks <= 0)
 			return description;
 
+		// Earnings per unit of capacity are knowable without knowing the route there.
+		string info = Format::Number(payment / (tons > 0 ? tons : bunks))
+			+ (tons > 0 ? " c per ton" : " c per bunk");
+
+		// Earnings per jump are only meaningful once a route to the destination is known.
 		const System *from = player.GetSystem();
 		const Planet *destination = mission.Destination();
-		if(!from || !destination || !destination->GetSystem())
-			return description;
+		if(from && destination && destination->GetSystem())
+		{
+			RoutePlan route(*from, *destination->GetSystem(), &player);
+			// Plan() omits the system being travelled from, so its size is the number of jumps.
+			const int jumps = route.HasRoute() ? static_cast<int>(route.Plan().size()) : 0;
+			if(jumps > 0)
+				info += ". " + Format::Number(payment / jumps) + " c per jump, "
+					+ Format::SimplePluralization(jumps, "jump");
+		}
 
-		RoutePlan route(*from, *destination->GetSystem(), &player);
-		if(!route.HasRoute())
-			return description;
-
-		// Plan() omits the system being travelled from, so its size is the number of jumps.
-		const int jumps = static_cast<int>(route.Plan().size());
-		if(jumps <= 0)
-			return description;
-
-		string result = description + "\n\n";
-		result += Format::CreditString(payment / (tons > 0 ? tons : bunks));
-		result += (tons > 0 ? " per ton\n" : " per bunk\n");
-		result += Format::CreditString(payment / jumps) + " per jump ("
-			+ Format::SimplePluralization(jumps, "jump") + ")";
-
-		return result;
+		return description + "\n(" + info + ")";
 	}
 
 	size_t MaxDisplayedMissions(bool onRight)
